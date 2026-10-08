@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Disaster Resource Locator - ResqMap PWA</title>
+
+  <meta name="theme-color" content="#0284c7">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ResqMap">
+
+  <!-- ===== PWA SETUP (all inline: icons + manifest are generated at load) ===== -->
+  <script>
+    (function () {
+      function makeIcon(size, scale) {
+        const c = document.createElement('canvas');
+        c.width = c.height = size;
+        const d = c.getContext('2d');
+        d.fillStyle = '#0f172a'; d.fillRect(0, 0, size, size);
+        const s = size * scale, cx = size / 2, cy = size / 2;
+        d.fillStyle = '#0284c7';
+        d.beginPath();
+        d.moveTo(cx, cy - s * .5); d.lineTo(cx + s / 2, cy - s * .32); d.lineTo(cx + s / 2, cy + s * .05);
+        d.lineTo(cx, cy + s * .55); d.lineTo(cx - s / 2, cy + s * .05); d.lineTo(cx - s / 2, cy - s * .32);
+        d.closePath(); d.fill();
+        d.fillStyle = '#fff';
+        const w = s * .12, h = s * .36, o = s * .04;
+        d.fillRect(cx - w / 2, cy - h / 2 - o, w, h);
+        d.fillRect(cx - h / 2, cy - w / 2 - o, h, w);
+        return c.toDataURL('image/png');
+      }
+      const i192 = makeIcon(192, .7), i512 = makeIcon(512, .7), iMask = makeIcon(512, .5), iApple = makeIcon(180, .7);
+
+      function addLink(rel, href, extra) {
+        const l = document.createElement('link');
+        l.rel = rel; l.href = href;
+        if (extra) Object.keys(extra).forEach(k => l.setAttribute(k, extra[k]));
+        document.head.appendChild(l);
+      }
+      addLink('icon', i192, { type: 'image/png', sizes: '192x192' });
+      addLink('apple-touch-icon', iApple);
+
+      const base = location.origin + location.pathname.replace(/[^\/]*$/, '');
+      const manifest = {
+        name: 'ResqMap - Disaster Resource Locator',
+        short_name: 'ResqMap',
+        description: 'Live shelters, hospitals and flood-safe routing during disasters.',
+        start_url: location.origin + location.pathname,
+        scope: base,
+        display: 'standalone',
+        background_color: '#0f172a',
+        theme_color: '#0284c7',
+        icons: [
+          { src: i192, sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: i512, sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: iMask, sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+        ]
+      };
+      const url = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+      addLink('manifest', url);
+    })();
+  </script>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+  <style>
+    :root {
+      --primary: #0284c7;
+      --bg-dark: #0f172a;
+      --bg-card: #1e293b;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --border-color: #334155;
+      --status-open: #22c55e;
+      --status-filling: #f59e0b;
+      --status-full: #ef4444;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
+    html, body { width: 100%; height: 100%; height: 100dvh; display: flex; flex-direction: column; margin: 0; padding: 0; background-color: var(--bg-dark); color: var(--text-main); overflow: hidden; touch-action: manipulation; }
+
+    header { flex: 0 0 auto; min-height: 60px; gap: 0.5rem; padding-bottom: 0.4rem; padding-top: calc(0.4rem + env(safe-area-inset-top, 0px)); height: auto;  background: rgba(15, 23, 42, 0.95); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; padding-left: 1rem; padding-right: 1rem; z-index: 1000; }
+    .brand { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+    .brand-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .brand i { font-size: 1.5rem; color: #38bdf8; }
+    .brand-title { font-size: 1.1rem; font-weight: 700; color: #ffffff; }
+    .brand-sub { font-size: 0.72rem; color: var(--text-muted); }
+    .nav-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+
+    .btn { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); padding: 0.45rem 0.8rem; border-radius: 8px; font-size: 0.82rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 0.35rem; text-decoration: none; user-select: none; }
+    .btn:active { transform: scale(0.97); }
+    .btn-primary { background: var(--primary); border-color: var(--primary); color: #ffffff; }
+    .btn-danger { background: #dc2626; border-color: #dc2626; color: white; }
+    .btn-warning { background: #d97706; border-color: #d97706; color: white; }
+
+    .net-status { padding: 0.3rem 0.6rem; border-radius: 20px; font-size: 0.72rem; font-weight: 600; display: flex; align-items: center; gap: 0.35rem; }
+    .net-status.online { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
+    .net-status.offline { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+
+    .app-container { display: flex; width: 100%; flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
+    .sidebar { width: 380px; background: var(--bg-card); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; z-index: 900; }
+    .sidebar-header { padding: 0.85rem; border-bottom: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 0.65rem; }
+
+    .find-near-btn { width: 100%; padding: 0.75rem; font-size: 0.9rem; font-weight: 700; border-radius: 10px; justify-content: center; }
+    .filter-pills { display: flex; gap: 0.4rem; overflow-x: auto; padding-bottom: 0.2rem; -webkit-overflow-scrolling: touch; }
+    .filter-pill { padding: 0.35rem 0.7rem; border-radius: 20px; background: #0f172a; border: 1px solid var(--border-color); color: var(--text-muted); font-size: 0.75rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .filter-pill.active { background: var(--primary); color: #ffffff; border-color: var(--primary); }
+
+    .resource-list { flex: 1; overflow-y: auto; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.75rem; -webkit-overflow-scrolling: touch; }
+    .resource-card { background: #0f172a; border: 1px solid var(--border-color); border-radius: 12px; padding: 0.85rem; cursor: pointer; }
+    .resource-card:active { border-color: #38bdf8; }
+    .resource-card.selected { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3); }
+
+    .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.4rem; }
+    .card-title { font-size: 0.95rem; font-weight: 700; color: #f1f5f9; }
+    .card-category { font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.3rem; margin-top: 0.15rem; }
+
+    .card-capacity-bar { width: 100%; height: 8px; background: #334155; border-radius: 4px; margin: 0.5rem 0; overflow: hidden; }
+    .capacity-fill { height: 100%; border-radius: 4px; }
+    .fill-open { background: var(--status-open); }
+    .fill-filling { background: var(--status-filling); }
+    .fill-full { background: var(--status-full); }
+
+    .card-stats { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); }
+    .card-actions { display: flex; gap: 0.4rem; margin-top: 0.6rem; }
+    .card-actions .btn { flex: 1; justify-content: center; font-size: 0.78rem; padding: 0.35rem; }
+
+    .map-container { flex: 1; height: 100%; position: relative; min-height: 350px; }
+    #map { width: 100%; height: 100% !important; min-height: 350px; background: #0f172a; }
+
+    .sos-floating-btn { position: absolute; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); right: 20px; z-index: 1000; background: linear-gradient(135deg, #ef4444, #b91c1c); color: white; padding: 0.75rem 1.2rem; border-radius: 50px; font-size: 0.9rem; font-weight: 800; border: none; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; box-shadow: 0 8px 24px rgba(239, 68, 68, 0.5); }
+    .route-info-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 999; background: rgba(15, 23, 42, 0.94); border: 1px solid var(--border-color); border-radius: 12px; padding: 0.5rem 1rem; display: flex; align-items: center; gap: 0.6rem; font-size: 0.8rem; max-width: 90%; text-align: center; }
+    .banner-warning { border-color: #f59e0b; color: #f59e0b; }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(5px); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 1rem; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; }
+    .modal-overlay.active { opacity: 1; pointer-events: auto; }
+    .modal-box { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 16px; width: 100%; max-width: 520px; padding: 1.25rem; max-height: 85vh; overflow-y: auto; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; }
+    .modal-title { font-size: 1.05rem; font-weight: 700; display: flex; align-items: center; gap: 0.4rem; }
+    .close-btn { background: none; border: none; color: var(--text-muted); font-size: 1.4rem; cursor: pointer; }
+
+    .form-group { margin-bottom: 0.85rem; }
+    .form-group label { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+    .form-control { width: 100%; padding: 0.6rem; border-radius: 8px; background: #0f172a; border: 1px solid var(--border-color); color: white; font-size: 0.85rem; }
+
+    .sms-log { background: #090d16; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; font-family: monospace; font-size: 0.8rem; color: #4ade80; max-height: 160px; overflow-y: auto; white-space: pre-wrap; margin-top: 0.5rem; }
+    .demo-tour-banner { position: absolute; bottom: 20px; left: 20px; right: 20px; z-index: 1000; background: #0f172a; border: 2px solid #38bdf8; border-radius: 14px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.4rem; }
+    .demo-step-badge { font-size: 0.7rem; background: #38bdf8; color: #0f172a; padding: 0.15rem 0.4rem; border-radius: 4px; font-weight: 800; align-self: flex-start; }
+
+    .custom-leaflet-marker { display: flex; align-items: center; justify-content: center; border-radius: 50%; color: white; font-size: 0.9rem; border: 2px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+    .marker-shelter { background: #0284c7; }
+    .marker-hospital { background: #dc2626; }
+    .marker-camp { background: #d97706; }
+    .marker-food_water { background: #16a34a; }
+    .marker-pharmacy { background: #9333ea; }
+    .marker-user { background: #2563eb; }
+
+    #iosTip { display: none; position: fixed; left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom, 0px)); z-index: 3000; background: #0f172a; border: 2px solid #38bdf8; border-radius: 12px; padding: 0.75rem 1rem; font-size: 0.85rem; }
+
+    @media (max-width: 768px) {
+      header { padding-left: 0.75rem; padding-right: 0.75rem; flex-wrap: wrap; }
+      .brand { flex: 1 1 100%; }
+      .brand-sub { display: none; }
+      .nav-actions { flex: 1 1 100%; justify-content: space-between; overflow-x: auto; scrollbar-width: none; }
+      .nav-actions::-webkit-scrollbar { display: none; }
+      .nav-actions .btn { padding: 0.45rem 0.65rem; flex-shrink: 0; }
+      .nav-actions .net-status { flex-shrink: 0; }
+      .btn .label { display: none; }
+      .app-container { flex-direction: column-reverse; }
+      .sidebar { width: 100%; flex: 1 1 0; min-height: 0; border-right: none; border-top: 1px solid var(--border-color); }
+      .map-container { flex: 1 1 0; min-height: 0; width: 100%; height: auto; }
+      #map { min-height: 0; }
+      .sos-floating-btn { bottom: 14px; right: 14px; padding: 0.65rem 1rem; font-size: 0.8rem; }
+      .demo-tour-banner { bottom: 60px; left: 10px; right: 10px; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <i class="fa-solid fa-shield-halved"></i>
+      <div>
+        <div class="brand-title" data-i18n="appTitle">Disaster ResQ Locator</div>
+        <div class="brand-sub" data-i18n="subTitle">Live Shelters, Hospitals & Flood Rerouting</div>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <div id="netStatusBadge" class="net-status online">
+        <i class="fa-solid fa-wifi"></i> <span data-i18n="onlineNotice">Live</span>
+      </div>
+
+      <button class="btn" id="smsSimBtn" title="SMS Gateway"><i class="fa-solid fa-comment-sms"></i></button>
+
+      <button class="btn btn-warning" id="demoTourBtn">
+        <i class="fa-solid fa-circle-play"></i> <span class="label" data-i18n="demoTour">Tour</span>
+      </button>
+
+      <button class="btn" id="adminToggleBtn"><i class="fa-solid fa-user-shield"></i></button>
+
+      <!-- PWA install button (shown only when installable) -->
+      <button class="btn btn-primary" id="installBtn" style="display:none;"><i class="fa-solid fa-download"></i> <span class="label">Install</span></button>
+
+      <button class="btn btn-primary" id="langToggleBtn">தமிழ்</button>
+    </div>
+  </header>
+
+  <div class="app-container">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <button class="btn btn-primary find-near-btn" id="findNearBtn">
+          <i class="fa-solid fa-location-crosshairs"></i> <span data-i18n="findNearMe">Find Help Near Me</span>
+        </button>
+
+        <div class="filter-pills">
+          <div class="filter-pill active" data-cat="all" data-i18n="allCategories">All</div>
+          <div class="filter-pill" data-cat="shelter" data-i18n="shelter">Shelters</div>
+          <div class="filter-pill" data-cat="camp" data-i18n="camp">Camps</div>
+          <div class="filter-pill" data-cat="hospital" data-i18n="hospital">Hospitals</div>
+          <div class="filter-pill" data-cat="food_water" data-i18n="food_water">Food & Water</div>
+          <div class="filter-pill" data-cat="pharmacy" data-i18n="pharmacy">Pharmacies</div>
+        </div>
+      </div>
+
+      <div class="resource-list" id="resourceList"></div>
+    </div>
+
+    <div class="map-container">
+      <div id="map"></div>
+      <div id="routeBanner" class="route-info-banner" style="display: none;"></div>
+
+      <button class="sos-floating-btn" id="sosBtn">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span data-i18n="sosButton">SOS Emergency</span>
+      </button>
+
+      <button class="btn btn-danger" id="reportFloodBtn" style="position: absolute; bottom: 74px; right: 14px; z-index: 1000; padding: 0.5rem 0.8rem; font-size: 0.78rem;">
+        <i class="fa-solid fa-road-barrier"></i> <span data-i18n="reportFloodedRoad">Report Flood</span>
+      </button>
+
+      <div id="demoBanner" class="demo-tour-banner" style="display: none;">
+        <span class="demo-step-badge" id="demoStepBadge">STEP 1</span>
+        <div id="demoStepText" style="font-size: 0.85rem; color: #f1f5f9;"></div>
+        <div style="display: flex; justify-content: flex-end; margin-top: 0.2rem;">
+          <button class="btn btn-primary btn-sm" id="demoNextBtn">Next Step →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- iOS install hint -->
+  <div id="iosTip">
+    To install: tap <b>Share</b> <i class="fa-solid fa-arrow-up-from-bracket"></i> then <b>Add to Home Screen</b>.
+    <button class="btn" style="margin-top:6px;" onclick="this.parentElement.style.display='none'">Got it</button>
+  </div>
+
+  <!-- Smart Redirect Modal -->
+  <div class="modal-overlay" id="smartRedirectModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title" style="color: #ef4444;" data-i18n="smartRedirectTitle">
+          <i class="fa-solid fa-triangle-exclamation"></i> Camp Full! Smart Redirecting...
+        </div>
+        <button class="close-btn" onclick="closeModal('smartRedirectModal')">&times;</button>
+      </div>
+      <div id="smartRedirectBody"></div>
+      <div style="margin-top: 1rem; display: flex; justify-content: flex-end; gap: 0.5rem;">
+        <button class="btn" onclick="closeModal('smartRedirectModal')">Cancel</button>
+        <button class="btn btn-primary" id="confirmRerouteBtn" data-i18n="rerouteButton">Reroute to Next Shelter</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Modal -->
+  <div class="modal-overlay" id="adminModal">
+    <div class="modal-box" style="max-width: 720px;">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fa-solid fa-user-shield text-sky-400"></i> Admin Command Center</div>
+        <button class="close-btn" onclick="closeModal('adminModal')">&times;</button>
+      </div>
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+        <button class="btn btn-primary btn-sm">Live Capacity</button>
+      </div>
+      <div id="capacityTab" class="admin-tab">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+          <thead>
+            <tr style="background: #0f172a; text-align: left; color: #94a3b8;">
+              <th style="padding: 8px;">Facility</th>
+              <th style="padding: 8px;">Status</th>
+              <th style="padding: 8px;">Free / Total</th>
+              <th style="padding: 8px;">Quick Update</th>
+            </tr>
+          </thead>
+          <tbody id="adminCapacityBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- SOS Modal -->
+  <div class="modal-overlay" id="sosModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title" style="color: #ef4444;"><i class="fa-solid fa-truck-medical"></i> Broadcast Emergency SOS</div>
+        <button class="close-btn" onclick="closeModal('sosModal')">&times;</button>
+      </div>
+      <form id="sosForm">
+        <div class="form-group">
+          <label>Your Name / Contact Person</label>
+          <input type="text" id="sosName" class="form-control" placeholder="e.g. Kavitha" required>
+        </div>
+        <div class="form-group">
+          <label>Phone Number</label>
+          <input type="tel" id="sosPhone" class="form-control" placeholder="+91 98765 43210" required>
+        </div>
+        <div class="form-group">
+          <label>Number of People Trapped</label>
+          <input type="number" id="sosPeople" class="form-control" value="1" min="1" required>
+        </div>
+        <button type="submit" class="btn btn-danger" style="width: 100%; justify-content: center; padding: 0.7rem;">
+          <i class="fa-solid fa-paper-plane"></i> Broadcast SOS Alert
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Report Flood Modal -->
+  <div class="modal-overlay" id="reportFloodModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title" style="color: #f59e0b;"><i class="fa-solid fa-road-barrier"></i> Report Flooded Road</div>
+        <button class="close-btn" onclick="closeModal('reportFloodModal')">&times;</button>
+      </div>
+      <form id="reportFloodForm">
+        <div class="form-group">
+          <label>Road Name / Location Title</label>
+          <input type="text" id="floodTitle" class="form-control" placeholder="e.g. Velachery Main Road Inundated" required>
+        </div>
+        <div class="form-group">
+          <label>Blocked Radius (Meters)</label>
+          <input type="number" id="floodRadius" class="form-control" value="400">
+        </div>
+        <button type="submit" class="btn btn-warning" style="width: 100%; justify-content: center; padding: 0.7rem;">
+          <i class="fa-solid fa-bullhorn"></i> Mark Flooded Zone
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- SMS Modal -->
+  <div class="modal-overlay" id="smsModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fa-solid fa-comment-sms text-sky-400"></i> SMS Gateway Emulator</div>
+        <button class="close-btn" onclick="closeModal('smsModal')">&times;</button>
+      </div>
+      <p style="font-size: 0.8rem; color: #94a3b8;">Simulates SMS queries for users without cellular data.</p>
+      <div class="form-group" style="margin-top: 0.75rem;">
+        <label>Text 'SHELTER', 'HOSPITAL', or 'SOS'</label>
+        <div style="display: flex; gap: 0.5rem;">
+          <input type="text" id="smsInput" class="form-control" placeholder="SHELTER">
+          <button class="btn btn-primary" id="sendSmsBtn">Send SMS</button>
+        </div>
+      </div>
+      <div id="smsLog" class="sms-log">[SMS SYSTEM READY] Send keyword above.</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <!-- PWA runtime: service worker (optional file), install prompt, online/offline -->
+  <script>
+    // Offline caching needs a real sw.js file next to this page (browsers don't allow inline service workers).
+    // If sw.js is missing, the app still installs; it just won't work offline.
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js')
+          .then(reg => console.log('[PWA] ServiceWorker active:', reg.scope))
+          .catch(err => console.log('[PWA] No sw.js found (install still works):', err.message));
+      });
+    }
+
+    let deferredPrompt = null;
+    const installBtn = document.getElementById('installBtn');
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      deferredPrompt = e;
+      if (!isStandalone) installBtn.style.display = 'inline-flex';
+    });
+    installBtn.addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+      installBtn.style.display = 'none';
+    });
+    window.addEventListener('appinstalled', () => { installBtn.style.display = 'none'; });
+
+    if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !isStandalone) {
+      document.getElementById('iosTip').style.display = 'block';
+    }
+
+    function updateNet() {
+      const badge = document.getElementById('netStatusBadge');
+      const on = navigator.onLine;
+      badge.className = 'net-status ' + (on ? 'online' : 'offline');
+      badge.innerHTML = on
+        ? '<i class="fa-solid fa-wifi"></i> <span>' + (translations[currentLang].onlineNotice) + '</span>'
+        : '<i class="fa-solid fa-plane-slash"></i> <span>' + (translations[currentLang].offlineNotice) + '</span>';
+    }
+    window.addEventListener('online', updateNet);
+    window.addEventListener('offline', updateNet);
+  </script>
+
+  <!-- Main Script -->
+  <script>
+    const translations = {
+      en: {
+        appTitle: "Disaster ResQ Locator", subTitle: "Live Shelters, Hospitals & Flood Rerouting",
+        findNearMe: "Find Help Near Me", allCategories: "All", shelter: "Shelters", hospital: "Hospitals",
+        camp: "Camps", food_water: "Food & Water", pharmacy: "Pharmacies",
+        statusOpen: "Open", statusFilling: "Filling", statusFull: "Full",
+        bedsLeft: "Beds Left", sosButton: "SOS Emergency", smsFallback: "SMS Gateway",
+        adminDashboard: "Admin Dashboard", onlineNotice: "Live", offlineNotice: "Offline",
+        reportFloodedRoad: "Report Flood", demoTour: "Tour",
+        atLocationNotice: "You are at this facility (0.0 km away)"
+      },
+      ta: {
+        appTitle: "பேரிடர் உதவி & முகாம் அறிவான்", subTitle: "நேரலை முகாம்கள் & வெள்ளப் பாதை வழிகாட்டி",
+        findNearMe: "எனக்கு அருகில் உள்ள உதவி", allCategories: "அனைத்தும்", shelter: "தங்குமிடங்கள்", hospital: "மருத்துவமனைகள்",
+        camp: "முகாம்கள்", food_water: "உணவு & தண்ணீர்", pharmacy: "மருந்தகங்கள்",
+        statusOpen: "திறந்துள்ளது", statusFilling: "நிறைகிறது", statusFull: "நிறைந்தது",
+        bedsLeft: "காலியாக உள்ள இடம்", sosButton: "SOS அவசர உதவி", smsFallback: "SMS சேவை",
+        adminDashboard: "நிர்வாகி", onlineNotice: "நேரலை", offlineNotice: "ஆஃப்லைன்",
+        reportFloodedRoad: "வெள்ளப் பாதை", demoTour: "டெமோ",
+        atLocationNotice: "நீங்கள் இந்த மையத்தில் உள்ளீர்கள் (0.0 கி.மீ)"
+      }
+    };
+    let currentLang = 'en';
+
+    function setLanguage(lang) {
+      currentLang = lang;
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (translations[lang] && translations[lang][key]) el.textContent = translations[lang][key];
+      });
+      const langBtn = document.getElementById('langToggleBtn');
+      if (langBtn) langBtn.textContent = lang === 'en' ? 'தமிழ்' : 'English';
+      updateNet();
+      renderAll();
+    }
+
+    let resources = [
+      { id: "res_1", name: "Ripon Building Relief Shelter", name_ta: "ரிப்பன் கட்டிடம் நிவாரண மையம்", category: "shelter", lat: 13.0827, lng: 80.2707, address: "EVR Periyar Salai, Chennai", total_capacity: 300, occupied_capacity: 140, status: "Open" },
+      { id: "res_2", name: "Velachery Community Flood Camp", name_ta: "வேளச்சேரி சமூக வெள்ள நிவாரண முகாம்", category: "camp", lat: 12.9815, lng: 80.2180, address: "100 Feet Bypass Road, Velachery", total_capacity: 200, occupied_capacity: 198, status: "Filling" },
+      { id: "res_3", name: "Rajiv Gandhi Govt General Hospital", name_ta: "ராஜீவ் காந்தி அரசு பொது மருத்துவமனை", category: "hospital", lat: 13.0810, lng: 80.2778, address: "Park Town, Chennai", total_capacity: 150, occupied_capacity: 150, status: "Full" },
+      { id: "res_4", name: "Mylapore Higher Sec School Shelter", name_ta: "மயிலாப்பூர் மேல்நிலைப் பள்ளி முகாம்", category: "shelter", lat: 13.0335, lng: 80.2680, address: "Kutchery Road, Mylapore", total_capacity: 250, occupied_capacity: 85, status: "Open" },
+      { id: "res_5", name: "T. Nagar Community Food & Water Hub", name_ta: "தி. நகர் உணவு & குடிநீர் மையம்", category: "food_water", lat: 13.0418, lng: 80.2341, address: "Venkatnarayana Road, T. Nagar", total_capacity: 1000, occupied_capacity: 450, status: "Open" }
+    ];
+
+    let floodedZones = [
+      { id: "flood_1", title: "Velachery Main Road Inundated (2.5 ft water)", lat: 12.9785, lng: 80.2215, radius: 450 }
+    ];
+
+    let userLocation = [13.0827, 80.2707];
+    let selectedResource = null;
+    let currentCategory = 'all';
+    let map = null;
+    let routeLayer = null;
+    let demoStep = 0;
+
+    function initMap() {
+      if (typeof L === 'undefined') {
+        setTimeout(initMap, 200);
+        return;
+      }
+
+      const mapElem = document.getElementById('map');
+      if (!mapElem || map) return;
+
+      map = L.map('map').setView(userLocation, 12);
+
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19,
+        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China, TomTom'
+      }).addTo(map);
+
+      const userIcon = L.divIcon({ className: 'custom-leaflet-marker marker-user', html: '<i class="fa-solid fa-person-dots-from-line"></i>', iconSize: [32, 32] });
+      L.marker(userLocation, { icon: userIcon }).addTo(map).bindPopup('<b>Your Location</b>');
+
+      setTimeout(() => { map.invalidateSize(); }, 300);
+      renderAll();
+    }
+
+    function calcDist(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    function calculateSafeRoute(start, end) {
+      if (typeof turf === 'undefined') return { waypoints: [start, end], isRerouted: false, avoidedCount: 0 };
+
+      const directLine = turf.lineString([[start[1], start[0]], [end[1], end[0]]]);
+
+      let hitZones = [];
+      floodedZones.forEach(zone => {
+        const zoneCenter = turf.point([zone.lng, zone.lat]);
+        const dist = turf.pointToLineDistance(zoneCenter, directLine, { units: 'kilometers' });
+        if (dist * 1000 <= zone.radius * 1.2) hitZones.push(zone);
+      });
+
+      let waypoints = [[start[0], start[1]]];
+      if (hitZones.length > 0) {
+        hitZones.forEach(zone => {
+          const dx = end[1] - start[1];
+          const dy = end[0] - start[0];
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const normX = -dy / (len || 1);
+          const normY = dx / (len || 1);
+          const offsetDeg = (zone.radius + 150) / 111000;
+          waypoints.push([zone.lat + normY * offsetDeg, zone.lng + normX * offsetDeg]);
+        });
+      }
+      waypoints.push([end[0], end[1]]);
+      return { waypoints, isRerouted: hitZones.length > 0, avoidedCount: hitZones.length };
+    }
+
+    function drawRoute(routeResult) {
+      if (!map) return;
+      if (routeLayer) map.removeLayer(routeLayer);
+      const color = routeResult.isRerouted ? '#f59e0b' : '#2563eb';
+      routeLayer = L.polyline(routeResult.waypoints, { color, weight: 6, opacity: 0.85, dashArray: routeResult.isRerouted ? '10,10' : null }).addTo(map);
+
+      try {
+        map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+      } catch (e) {}
+
+      const banner = document.getElementById('routeBanner');
+      banner.className = routeResult.isRerouted ? 'route-info-banner banner-warning' : 'route-info-banner';
+      banner.style.borderColor = routeResult.isRerouted ? '#f59e0b' : '#334155';
+      banner.style.color = routeResult.isRerouted ? '#f59e0b' : '#f8fafc';
+      banner.innerHTML = routeResult.isRerouted
+        ? `<i class="fa-solid fa-triangle-exclamation"></i> Detoured around ${routeResult.avoidedCount} flooded road(s)`
+        : `<i class="fa-solid fa-route"></i> Safe Direct Route Calculated`;
+      banner.style.display = 'flex';
+    }
+
+    const categoryIcons = { shelter: 'fa-house-user', hospital: 'fa-hospital', camp: 'fa-tent', food_water: 'fa-bowl-rice', pharmacy: 'fa-prescription-bottle-medical' };
+
+    function renderAll() {
+      if (!map) return;
+      map.eachLayer(l => {
+        if (l instanceof L.Marker && l.options.isResource) map.removeLayer(l);
+        if (l instanceof L.Circle && !l.options.isRoute) map.removeLayer(l);
+      });
+
+      floodedZones.forEach(z => {
+        L.circle([z.lat, z.lng], { color: '#ef4444', fillColor: '#dc2626', fillOpacity: 0.35, radius: z.radius }).addTo(map).bindPopup(`<b style="color:#ef4444;">${z.title}</b>`);
+      });
+
+      const filtered = currentCategory === 'all' ? resources : resources.filter(r => r.category === currentCategory);
+      filtered.forEach(res => {
+        const icon = L.divIcon({ className: `custom-leaflet-marker marker-${res.category}`, html: `<i class="fa-solid ${categoryIcons[res.category]}"></i>`, iconSize: [32, 32] });
+        const marker = L.marker([res.lat, res.lng], { icon, isResource: true }).addTo(map);
+        marker.bindPopup(`<b>${res.name}</b><br>${res.total_capacity - res.occupied_capacity} free beds<br><button class="btn btn-primary btn-sm" onclick="selectResource('${res.id}')">Navigate</button>`);
+      });
+
+      renderSidebarList(filtered);
+    }
+
+    function renderSidebarList(list) {
+      const container = document.getElementById('resourceList');
+      if (!container) return;
+      container.innerHTML = '';
+      list.forEach(r => r.distanceKm = calcDist(userLocation[0], userLocation[1], r.lat, r.lng));
+      list.sort((a, b) => a.distanceKm - b.distanceKm);
+
+      list.forEach(res => {
+        const freeBeds = res.total_capacity - res.occupied_capacity;
+        const fillPct = Math.min(100, Math.round((res.occupied_capacity / res.total_capacity) * 100));
+        const card = document.createElement('div');
+        card.className = `resource-card ${selectedResource?.id === res.id ? 'selected' : ''}`;
+        card.innerHTML = `
+          <div class="card-top">
+            <div>
+              <div class="card-title">${currentLang === 'ta' ? res.name_ta : res.name}</div>
+              <div class="card-category"><i class="fa-solid ${categoryIcons[res.category]}"></i> • ${res.distanceKm.toFixed(1)} km</div>
+            </div>
+            <span style="font-size: 0.7rem; font-weight: bold; padding: 2px 6px; border-radius: 10px; background: ${res.status === 'Open' ? 'rgba(34,197,94,0.2)' : (res.status === 'Filling' ? 'rgba(245,158,11,0.2)' : 'rgba(239,68,68,0.2)')}; color: ${res.status === 'Open' ? '#4ade80' : (res.status === 'Filling' ? '#fbbf24' : '#f87171')};">${res.status}</span>
+          </div>
+          <div class="card-capacity-bar"><div class="capacity-fill fill-${res.status.toLowerCase()}" style="width: ${fillPct}%;"></div></div>
+          <div class="card-stats"><span>Beds Left: <b>${freeBeds}</b></span></div>
+          <div class="card-actions"><button class="btn btn-primary" onclick="event.stopPropagation(); selectResource('${res.id}')">Navigate</button></div>
+        `;
+        card.onclick = () => selectResource(res.id);
+        container.appendChild(card);
+      });
+    }
+
+    function selectResource(resId) {
+      const res = resources.find(r => r.id === resId);
+      if (!res) return;
+      selectedResource = res;
+      renderAll();
+
+      const dist = calcDist(userLocation[0], userLocation[1], res.lat, res.lng);
+      const freeBeds = res.total_capacity - res.occupied_capacity;
+
+      if (res.status === 'Full' || freeBeds <= 0) {
+        triggerSmartRedirect(res);
+      } else if (dist < 0.05) {
+        if (map) {
+          map.flyTo([res.lat, res.lng], 16);
+          if (routeLayer) map.removeLayer(routeLayer);
+          routeLayer = L.circle([res.lat, res.lng], {
+            color: '#38bdf8', fillColor: '#0284c7', fillOpacity: 0.45, radius: 60, isRoute: true
+          }).addTo(map);
+
+          map.eachLayer(l => {
+            if (l instanceof L.Marker && l.options.isResource && l.getLatLng().lat === res.lat && l.getLatLng().lng === res.lng) {
+              l.openPopup();
+            }
+          });
+        }
+        const banner = document.getElementById('routeBanner');
+        banner.className = 'route-info-banner';
+        banner.style.borderColor = '#0284c7';
+        banner.style.color = '#38bdf8';
+        banner.innerHTML = `<i class="fa-solid fa-location-dot"></i> ${translations[currentLang].atLocationNotice || 'You are at this facility (0.0 km away)'}`;
+        banner.style.display = 'flex';
+      } else {
+        if (map) map.flyTo([res.lat, res.lng], 14);
+        const route = calculateSafeRoute(userLocation, [res.lat, res.lng]);
+        drawRoute(route);
+      }
+    }
+
+    function triggerSmartRedirect(fullRes) {
+      const available = resources.filter(r => r.id !== fullRes.id && (r.total_capacity - r.occupied_capacity) > 0);
+      if (available.length > 0) {
+        available.sort((a, b) => calcDist(fullRes.lat, fullRes.lng, a.lat, a.lng) - calcDist(fullRes.lat, fullRes.lng, b.lat, b.lng));
+        const nextBest = available[0];
+        document.getElementById('smartRedirectBody').innerHTML = `
+          <p style="color: #ef4444; font-weight: bold;">${fullRes.name} is FULL (0 beds available).</p>
+          <p style="margin: 0.5rem 0; color: #94a3b8;">Smart Redirect suggested next available facility:</p>
+          <div style="background: #0f172a; padding: 0.75rem; border-radius: 8px; border: 1px solid #0284c7;">
+            <b style="color: #38bdf8;">${nextBest.name}</b><br>
+            <span style="color: #4ade80;">${nextBest.total_capacity - nextBest.occupied_capacity} free beds</span> • ${calcDist(userLocation[0], userLocation[1], nextBest.lat, nextBest.lng).toFixed(1)} km
+          </div>
+        `;
+        document.getElementById('confirmRerouteBtn').onclick = () => {
+          closeModal('smartRedirectModal');
+          selectResource(nextBest.id);
+        };
+        openModal('smartRedirectModal');
+      }
+    }
+
+    function renderAdminPanel() {
+      const body = document.getElementById('adminCapacityBody');
+      if (!body) return;
+      body.innerHTML = '';
+      resources.forEach(res => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid #334155';
+        tr.innerHTML = `
+          <td style="padding: 8px;"><b>${res.name}</b></td>
+          <td style="padding: 8px;">${res.status}</td>
+          <td style="padding: 8px;">${res.total_capacity - res.occupied_capacity} / ${res.total_capacity}</td>
+          <td style="padding: 8px;">
+            <button class="btn btn-sm" onclick="updateCapacity('${res.id}', ${res.occupied_capacity + 10})">+10 Occupied</button>
+            <button class="btn btn-danger btn-sm" onclick="setResStatus('${res.id}', 'Full')">Set Full</button>
+            <button class="btn btn-primary btn-sm" onclick="setResStatus('${res.id}', 'Open')">Set Open</button>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function updateCapacity(id, occ) {
+      const res = resources.find(r => r.id === id);
+      if (res) {
+        res.occupied_capacity = Math.max(0, Math.min(res.total_capacity, occ));
+        res.status = res.occupied_capacity >= res.total_capacity ? 'Full' : (res.occupied_capacity > res.total_capacity * 0.85 ? 'Filling' : 'Open');
+        renderAll();
+        renderAdminPanel();
+      }
+    }
+
+    function setResStatus(id, status) {
+      const res = resources.find(r => r.id === id);
+      if (res) {
+        res.status = status;
+        if (status === 'Full') res.occupied_capacity = res.total_capacity;
+        if (status === 'Open' && res.occupied_capacity === res.total_capacity) res.occupied_capacity = Math.round(res.total_capacity * 0.5);
+        renderAll();
+        renderAdminPanel();
+      }
+    }
+
+    function startApp() {
+      initMap();
+      updateNet();
+
+      document.getElementById('findNearBtn').onclick = () => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(pos => {
+            userLocation = [pos.coords.latitude, pos.coords.longitude];
+            if (map) map.flyTo(userLocation, 14);
+            renderAll();
+          });
+        }
+      };
+
+      document.querySelectorAll('.filter-pill').forEach(pill => {
+        pill.onclick = () => {
+          document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+          pill.classList.add('active');
+          currentCategory = pill.getAttribute('data-cat');
+          renderAll();
+        };
+      });
+
+      document.getElementById('langToggleBtn').onclick = () => setLanguage(currentLang === 'en' ? 'ta' : 'en');
+      document.getElementById('adminToggleBtn').onclick = () => { renderAdminPanel(); openModal('adminModal'); };
+      document.getElementById('sosBtn').onclick = () => openModal('sosModal');
+      document.getElementById('reportFloodBtn').onclick = () => openModal('reportFloodModal');
+      document.getElementById('smsSimBtn').onclick = () => openModal('smsModal');
+
+      document.getElementById('sendSmsBtn').onclick = () => {
+        const val = (document.getElementById('smsInput').value || '').toUpperCase();
+        const log = document.getElementById('smsLog');
+        log.textContent += `\n> USER: ${val}`;
+
+        let match = resources.find(r => (r.total_capacity - r.occupied_capacity) > 0);
+        log.textContent += `\n< SMS GATEWAY:\n[DISASTER RESQ] Nearest Shelter: ${match.name}\nStatus: ${match.status} (${match.total_capacity - match.occupied_capacity} free beds)\nEmergency Call: 1077\n`;
+      };
+
+      document.getElementById('reportFloodForm').onsubmit = (e) => {
+        e.preventDefault();
+        const title = document.getElementById('floodTitle').value;
+        floodedZones.push({ id: "flood_" + Date.now(), title, lat: userLocation[0] + 0.005, lng: userLocation[1] + 0.005, radius: 400 });
+        closeModal('reportFloodModal');
+        renderAll();
+      };
+
+      document.getElementById('sosForm').onsubmit = (e) => {
+        e.preventDefault();
+        alert("SOS Broadcasted to Emergency Rescuers!");
+        closeModal('sosModal');
+      };
+
+      document.getElementById('demoTourBtn').onclick = () => {
+        demoStep = 1;
+        runDemoStep();
+      };
+    }
+
+    window.addEventListener('load', startApp);
+
+    function runDemoStep() {
+      const banner = document.getElementById('demoBanner');
+      const badge = document.getElementById('demoStepBadge');
+      const text = document.getElementById('demoStepText');
+      const nextBtn = document.getElementById('demoNextBtn');
+
+      if (demoStep === 0) { banner.style.display = 'none'; return; }
+      banner.style.display = 'flex';
+
+      if (demoStep === 1) {
+        badge.textContent = "STEP 1 of 4: Nearest Finder";
+        text.innerHTML = "Tapping 'Find help near me' locates GPS position & sorts shelters by distance.";
+        nextBtn.textContent = "Next: Smart Rerouting →";
+      } else if (demoStep === 2) {
+        badge.textContent = "STEP 2 of 4: Smart Rerouting";
+        text.innerHTML = "Selecting Velachery Camp... Route detours dynamically around flooded roads!";
+        selectResource('res_2');
+        nextBtn.textContent = "Next: Smart Redirect →";
+      } else if (demoStep === 3) {
+        badge.textContent = "STEP 3 of 4: Smart Redirect";
+        text.innerHTML = "Selecting FULL hospital 'Rajiv Gandhi General'... Smart Redirect suggests next available shelter!";
+        selectResource('res_3');
+        nextBtn.textContent = "Next: Finish Tour →";
+      } else if (demoStep === 4) {
+        badge.textContent = "STEP 4 of 4: Complete";
+        text.innerHTML = "App is ready for disaster relief operations!";
+        nextBtn.textContent = "Finish Tour ✓";
+      } else {
+        banner.style.display = 'none';
+        demoStep = 0;
+        return;
+      }
+      nextBtn.onclick = () => { demoStep++; runDemoStep(); };
+    }
+
+    function openModal(id) { document.getElementById(id)?.classList.add('active'); }
+    function closeModal(id) { document.getElementById(id)?.classList.remove('active'); }
+  </script>
+</body>
+</html>
